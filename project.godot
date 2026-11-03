@@ -35,5 +35,5 @@ curve_origin={
 }
 curve_amount={
 "type": "float",
-"value": 0.0032
+"value": 0.0019
 }

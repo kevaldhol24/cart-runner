@@ -48,5 +48,15 @@ xvfb-run -a -s "-screen 0 600x1000x24" godot --path . --rendering-driver opengl3
 - Always look at the screenshots; several bugs were only visible there. FPS in headless software rendering is meaningless.
 - Blender: `pip install bpy` (needs Python 3.13 for bpy 5.2) in a venv; run scripts with `python -I`.
 
+## Build 5 — city version (decided 2026-11-03)
+- Keval chose: **cart runner, city version**, art from free CC0 Quaternius packs (he liked it: "much better").
+- Street: Quaternius Downtown City MegaKit (Standard, CC0) in `assets/city/` (Street_4Lane tiles + 3 prebuilt buildings + props). Textures downscaled to 1024. Materials are replaced by our toon/curve shader using base color only (PBR normal/ORM looked washed-out/pink on the Compatibility renderer).
+- Road is now 12 m wide (matches the asphalt), lanes at -4/0/4, bumps 3.2 m wide. Buildings are upright (counter-rotated against the 8° chunk slope) with a stone plinth under the downhill end.
+- Character: Quaternius Universal Animation Library mannequin (`assets/anim/UAL1_Standard.glb`) playing `Push`; jump anim on crash. **Keep the mannequin for now**, Keval will provide Universal Base Characters later.
+- Obstacles: taxi, basic car, row of 3 traffic cones (old Quaternius models in `assets/props`). Indian props (autos, cows, thela, sign atlas) are no longer used but still in art.gd.
+- Curve reduced: `curve_amount` 0.0019 (Keval: "too rounded" at 0.0032).
+- Perf risk: buildings are 18k–45k tris and ~12 materials each, 4 per chunk. Waiting on Keval's phone FPS; if low, decimate in Blender (CC0 so modifying is fine) / fewer chunks / turn off building shadows.
+- Wanted next: Quaternius Universal Base Characters (real character), Quaternius Cars/Public Transport (city vehicles).
+
 ## Next step when resuming
 Ask Keval which art route he chose (Synty bought? Kenney downloaded?) and which game direction, then do a side-by-side look test before building features.

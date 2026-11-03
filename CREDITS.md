@@ -4,3 +4,6 @@
 Character, cow, fruit/food, taxi, streetlight. Converted from the original .blend files.
 
 Everything else (street, shops, auto-rickshaw, fruit cart, shopping cart, shaders) is built procedurally in code.
+
+City street, buildings and props: Quaternius **Downtown City MegaKit (Standard)** — CC0.
+Character animations and mannequin: Quaternius **Universal Animation Library (Standard)** — CC0.

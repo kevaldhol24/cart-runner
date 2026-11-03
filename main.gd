@@ -1,10 +1,12 @@
 extends Node3D
-# Cart Runner — look test (build 4).
+# Cart Runner — city version (build 5).
 # Same loop as build 3 (grab groceries, weight vs control, spills, crash), now on
 # a colourful Indian street with a curved world, toon shading and real models.
 
 const ROAD_LEN := 30.0
-const ROAD_W := 8.0
+const ROAD_W := 12.0
+const LANES := [-4.0, 0.0, 4.0]
+const BUILDINGS := ["res://assets/city/Building_Small_1.gltf", "res://assets/city/Building_Medium_2_001.gltf", "res://assets/city/Building_Large_2.gltf"]
 const NUM_CHUNKS := 8
 const SLOPE_DEG := 8.0
 const WALL_H := 0.7
@@ -39,6 +41,9 @@ var up_n := Vector3.ZERO
 var chunks: Array = []
 var next_s := 0.0
 var variants: Array = []
+var bld_info: Array = []   # [{scene, xmin, xmax, zmin}]
+var street_scene: PackedScene
+var prop_scenes := {}
 var pickups: Array[Node3D] = []
 var crates: Array[Node3D] = []
 var bumps: Array[Node3D] = []
@@ -117,27 +122,25 @@ func _ready() -> void:
 	e.sky = sky
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	e.ambient_light_color = Color(0.78, 0.83, 1.0)
-	e.ambient_light_energy = 0.5
+	e.ambient_light_energy = 0.6
 	e.fog_enabled = true
 	e.fog_light_color = Color(0.72, 0.87, 1.0)
-	e.fog_density = 0.007
+	e.fog_density = 0.004
 	e.fog_sky_affect = 0.0
 	env.environment = e
 	add_child(env)
 
 	sun = DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-52, 38, 0)
-	sun.light_color = Color(1.0, 0.96, 0.88)
-	sun.light_energy = 1.9
+	sun.light_color = Color(1.0, 0.93, 0.8)
+	sun.light_energy = 2.0
 	sun.shadow_enabled = true
 	sun.shadow_opacity = 0.7
 	sun.directional_shadow_max_distance = 40.0
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
 	add_child(sun)
 
-	await Art.build_sign_atlas(self)
-	for i in NUM_VARIANTS:
-		variants.append(build_variant(1000 + i))
+	load_city()
 	if autotest:
 		var vc := 0
 		for vv in variants:
@@ -293,6 +296,26 @@ func build_shop(mb: Art.MB, sm: Art.MB, rng: RandomNumberGenerator, sx: int, fro
 
 # ---------- chunks ----------
 
+func load_city() -> void:
+	street_scene = load("res://assets/city/Street_4Lane.gltf")
+	for path in BUILDINGS:
+		var sc: PackedScene = load(path)
+		var probe: Node3D = sc.instantiate()
+		var b := Art._aabb(probe)
+		probe.free()
+		bld_info.append({"scene": sc, "xmin": b.position.x, "xmax": b.end.x, "zmin": b.position.z})
+	for nm in ["Prop_Planter_Single", "Prop_Bollard", "Prop_ManholeCover"]:
+		prop_scenes[nm] = load("res://assets/city/%s.gltf" % nm)
+
+func city_inst(sc: PackedScene) -> Node3D:
+	var n: Node3D = sc.instantiate()
+	Art.curve_node(n)
+	return n
+
+# a node placed in chunk-local space that stands upright in the world
+func upright_basis(yaw: float) -> Basis:
+	return Basis(Vector3.RIGHT, slope) * Basis(Vector3.UP, yaw)
+
 func place_chunk(entry: Dictionary, s: float, index: int) -> void:
 	var ch: StaticBody3D = entry["node"]
 	entry["s"] = s
@@ -302,29 +325,60 @@ func place_chunk(entry: Dictionary, s: float, index: int) -> void:
 	ch.position = road_point(s + ROAD_LEN * 0.5)
 	var hw := ROAD_W * 0.5
 
-	var v: Dictionary = variants[randi() % variants.size()]
-	ch.add_child(Art.mesh_node(v["env"], Art.env_mat))
-	ch.add_child(Art.mesh_node(v["signs"], Art.sign_mat, false))
+	# street tiles: 6 m long each, asphalt surface at local y = 0
+	var tiles := int(ROAD_LEN / 6.0)
+	for i in tiles + 1:
+		var st := city_inst(street_scene)
+		st.position = Vector3(0, 0.15, ROAD_LEN * 0.5 - 3.0 - i * 6.0)
+		st.rotation.y = PI * 0.5
+		ch.add_child(st)
 	add_box_shape(ch, Vector3(ROAD_W, 1.0, ROAD_LEN + 0.4), Vector3(0, -0.5, 0))
+
 	for sx in [-1, 1]:
 		add_box_shape(ch, Vector3(0.3, 1.2, ROAD_LEN), Vector3(sx * (hw + 0.15), 0.6, 0))
+		# buildings fill the side, standing upright on the slope
+		var z := ROAD_LEN * 0.5
+		var guard := 0
+		while z > -ROAD_LEN * 0.5 + 4.0 and guard < 6:
+			guard += 1
+			var bi: Dictionary = bld_info[randi() % bld_info.size()]
+			var span: float = bi["xmax"] - bi["xmin"]
+			var b := city_inst(bi["scene"])
+			var yaw: float = -sx * PI * 0.5
+			# along-street local axis after yaw: z' = x for sx=+1, -x for sx=-1
+			var lo: float = float(bi["xmin"]) if sx > 0 else -float(bi["xmax"])
+			var zc := z - span - lo
+			b.transform = Transform3D(upright_basis(yaw), Vector3(sx * (hw + 3.0), 0.15, zc))
+			# stone plinth fills the gap under the downhill end
+			var depth: float = -bi["zmin"]
+			var plinth := Art.MB.new()
+			plinth.bx(Vector3((bi["xmin"] + bi["xmax"]) * 0.5, -1.8, -depth * 0.5), Vector3(span, 3.6, depth), Color(0.58, 0.55, 0.52))
+			b.add_child(Art.mesh_node(plinth.commit(), Art.env_mat, false))
+			ch.add_child(b)
+			z -= span + 0.3
+		# sidewalk dressing
 		var lamp := Art.model("res://assets/props/Streetlight.glb", 5.5, 1)
-		lamp.position = Vector3(sx * (hw + 0.6), 0.2, randf_range(-10, 10))
+		lamp.position = Vector3(sx * (hw + 0.6), 0.15, randf_range(-12, 12))
 		lamp.rotation.y = PI * 0.5 * -sx
 		ch.add_child(lamp)
+		for k in 2:
+			var nm: String = ["Prop_Planter_Single", "Prop_Bollard"][randi() % 2]
+			var pr := city_inst(prop_scenes[nm])
+			pr.transform = Transform3D(upright_basis(0.0), Vector3(sx * (hw + 1.6), 0.15, randf_range(-13, 13)))
+			ch.add_child(pr)
 
 	var lvl := clampf(s / 600.0, 0.0, 1.0)
-	var lanes := [-2.4, 0.0, 2.4]
+	var lanes: Array = LANES
 	if index >= 1:
 		for g in 2:
-			var lane: float = lanes[randi() % 3] + randf_range(-0.4, 0.4)
+			var lane: float = lanes[randi() % 3] + randf_range(-0.5, 0.5)
 			var z0 := ROAD_LEN * 0.5 - 3.0 - g * 14.0
 			var food := randi() % FOODS.size()
 			for k in randi_range(3, 6):
 				add_pickup(ch, Vector3(lane, 0.75, z0 - k * 1.6), food)
 	if index < 2:
 		return
-	var kinds := ["auto", "auto", "thela", "cow", "cow", "taxi"]
+	var kinds := ["taxi", "car", "car", "cones"]
 	for k in randi_range(1, 2 + int(lvl * 2)):
 		var cx: float = lanes[randi() % 3]
 		var cz := randf_range(-ROAD_LEN * 0.5 + 3, ROAD_LEN * 0.5 - 3)
@@ -335,30 +389,28 @@ func place_chunk(entry: Dictionary, s: float, index: int) -> void:
 		order.shuffle()
 		var n_bumps := 1 if randf() < 0.6 - lvl * 0.3 else 2
 		for k in n_bumps:
-			add_bump(ch, Vector3(lanes[order[k]], 0, bz), 2.3)
+			add_bump(ch, Vector3(lanes[order[k]], 0, bz), 3.2)
 
 func add_obstacle(ch: Node3D, kind: String, x: float, z: float) -> void:
 	var node: Node3D
 	var size := Vector3.ONE
 	var yaw := 0.0
 	match kind:
-		"auto":
-			node = Art.mesh_node(Art.get_auto(), Art.env_mat)
-			size = Vector3(1.45, 1.8, 2.6)
+		"car":
+			node = Art.model("res://assets/props/BasicCar.glb", 4.0, 2)
+			size = Vector3(1.9, 1.5, 4.0)
 			yaw = 0.0 if randf() < 0.5 else PI
-		"thela":
-			node = Art.mesh_node(Art.get_thela(), Art.env_mat)
-			size = Vector3(1.4, 1.3, 2.2)
-			yaw = randf_range(-0.2, 0.2)
+		"cones":
+			node = Node3D.new()
+			for k in 3:
+				var cone := Art.model("res://assets/props/TrafficCone.glb", 0.75, 1, {"Orange": Color(1.0, 0.45, 0.05), "White": Color(0.97, 0.97, 0.97)})
+				cone.position = Vector3(-1.1 + k * 1.1, 0, 0)
+				node.add_child(cone)
+			size = Vector3(3.0, 0.75, 0.6)
 		"taxi":
 			node = Art.model("res://assets/props/Taxi.glb", 3.6, 2)
 			size = Vector3(1.7, 1.5, 3.6)
 			yaw = 0.0 if randf() < 0.5 else PI
-		"cow":
-			node = Art.model("res://assets/char/cow.glb", 2.2, 2, {"Black": Color(0.6, 0.4, 0.25), "White": Color(0.97, 0.94, 0.88)})
-			Art.play_anim(node, "Idle", randf_range(0.8, 1.2))
-			size = Vector3(0.8, 1.4, 2.1)
-			yaw = PI * 0.5 * (1 if randf() < 0.5 else -1) + randf_range(-0.4, 0.4)
 	node.position = Vector3(x, 0, z)
 	node.rotation.y = yaw
 	ch.add_child(node)
@@ -432,17 +484,17 @@ func make_cart() -> void:
 	add_box_shape(cart, Vector3(t, WALL_H, 1.9), Vector3(0.65 - t * 0.5, y, 0))
 	cart.add_child(Art.mesh_node(Art.get_cart(), Art.env_mat))
 
-	boy_visual = Art.model("res://assets/char/boy.glb", 1.6, 1, {
-		"Shirt": Color(1.0, 0.5, 0.1), "Pants": Color(0.18, 0.32, 0.72), "Shoes": Color(0.95, 0.95, 0.95),
-		"Socks": Color(0.95, 0.95, 0.95), "Hair": Color(0.08, 0.05, 0.04), "Skin": Color(0.78, 0.55, 0.38)})
-	boy_visual.position = Vector3(-0.2, 0, 1.5)
+	boy_visual = Art.model("res://assets/anim/UAL1_Standard.glb", 1.72, 1)
+	boy_visual.position = Vector3(0, 0, 1.55)
 	boy_visual.rotation.y = PI
 	cart.add_child(boy_visual)
-	boy_anim = Art.play_anim(boy_visual, "Man_Run", 1.0)
+	boy_anim = Art.play_anim(boy_visual, "Push", 1.0)
 
 func make_fx() -> void:
 	for i in 4:
-		var p := burst_particles(18, 0.09, 0.55, 3.0, 6.0)
+		var p := burst_particles(14, 0.07, 0.4, 2.0, 4.0)
+		p.local_coords = true
+		p.reparent(cart, false)
 		var g := Gradient.new()
 		g.colors = PackedColorArray([Color(1, 0.9, 0.2), Color(1, 0.4, 0.6), Color(0.4, 0.9, 1.0), Color(1, 1, 1)])
 		g.offsets = PackedFloat32Array([0.0, 0.33, 0.66, 1.0])
@@ -621,7 +673,7 @@ func bot_steer() -> float:
 		var d := b.global_position.dot(fwd) - cs
 		if d > 0.0 and d < 12.0 and abs(b.global_position.x - target_x) < 1.9:
 			target_x = b.global_position.x + (2.4 if target_x >= b.global_position.x else -2.4)
-	target_x = clampf(target_x, -3.4, 3.4)
+	target_x = clampf(target_x, -5.0, 5.0)
 	return clampf((target_x - cx) * 0.6, -1.0, 1.0)
 
 # ---------- loop ----------
@@ -655,7 +707,7 @@ func _physics_process(delta: float) -> void:
 	if fwd_speed < target:
 		cart.apply_central_force(fwd * cart.mass * (target - fwd_speed) * 1.2)
 	var grip := 5.0 / (1.0 + cart_load * 0.035)
-	var max_lat := 7.0 - cart_load * 0.03
+	var max_lat := 8.5 - cart_load * 0.035
 	var steer := get_steer()
 	var desired_x := steer * max_lat
 	cart.apply_central_force(Vector3(1, 0, 0) * cart.mass * (desired_x - v.x) * grip)
@@ -684,7 +736,7 @@ func _physics_process(delta: float) -> void:
 			collected += 1
 			var fx := pop_fx[pop_i % pop_fx.size()]
 			pop_i += 1
-			fx.global_position = p.global_position
+			fx.position = cart.to_local(p.global_position)
 			fx.restart()
 			p.queue_free()
 			pickups.remove_at(i)
@@ -747,7 +799,7 @@ func crash() -> void:
 	boy_body.linear_velocity = fwd * maxf(prev_fwd_speed, 10.0) * 0.85 + up_n * 6.5 + Vector3(vel.x, 0, 0)
 	boy_body.angular_velocity = Vector3(randf_range(6, 10), randf_range(-3, 3), randf_range(-4, 4))
 	if boy_anim:
-		boy_anim.play(_anim_named(boy_anim, "Man_Jump"), 0.1, 1.5)
+		boy_anim.play(_anim_named(boy_anim, "Jump_Start"), 0.1, 1.2)
 
 	for it in items:
 		it.apply_central_impulse((up_n * randf_range(0.8, 1.8) + fwd * randf_range(0.0, 0.8) + Vector3(randf_range(-0.8, 0.8), 0, 0)) * 0.7)
