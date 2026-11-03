@@ -21,6 +21,9 @@ var chunks: Array = []
 var next_s := 0.0
 var pickups: Array[Node3D] = []
 var crates: Array[Node3D] = []
+var bumps: Array[Node3D] = []
+var shake := 0.0
+var crash_ms := 0
 
 var cart: RigidBody3D
 var boy_visual: Node3D
@@ -45,6 +48,7 @@ var mats := {}
 
 var cart_load := 0
 var collected := 0
+var spilled := 0
 var best := 0
 var final_score := 0
 var crash_reason := ""
@@ -116,6 +120,7 @@ func grocery_color() -> Color:
 
 func _ready() -> void:
 	autotest = "--autotest" in OS.get_cmdline_user_args()
+	Engine.time_scale = 1.0
 	randomize()
 	fwd = Vector3(0, -sin(slope), -cos(slope))
 	up_n = Vector3(0, cos(slope), -sin(slope))
@@ -208,26 +213,40 @@ func place_chunk(entry: Dictionary, s: float, index: int) -> void:
 		var cz := randf_range(-ROAD_LEN * 0.5 + 2, ROAD_LEN * 0.5 - 2)
 		var cr := add_box(ch, Vector3(1.0, 1.0, 1.0), Vector3(cx, 0.5, cz), Color(0.6, 0.42, 0.22))
 		crates.append(cr)
+	# speed bumps: lane-sized, never full width — always a gap to dodge through
 	if randf() < 0.5 + lvl * 0.3:
 		var bz := randf_range(-ROAD_LEN * 0.5 + 3, ROAD_LEN * 0.5 - 3)
-		# rounded speed bump: a fat cylinder mostly sunk into the road, so wheels
-		# roll up it and get kicked into the air (spilling groceries)
-		var r := 0.45
-		var bump_y := -r + 0.14
-		var cyl_shape := CylinderShape3D.new()
-		cyl_shape.radius = r
-		cyl_shape.height = ROAD_W - 1.0
-		var bcs := CollisionShape3D.new()
-		bcs.shape = cyl_shape
-		bcs.position = Vector3(0, bump_y, bz)
-		bcs.rotation = Vector3(0, 0, PI * 0.5)
-		ch.add_child(bcs)
-		var cyl_mesh := CylinderMesh.new()
-		cyl_mesh.top_radius = r
-		cyl_mesh.bottom_radius = r
-		cyl_mesh.height = ROAD_W - 1.0
-		cyl_mesh.radial_segments = 16
-		add_mesh(ch, cyl_mesh, Vector3(0, bump_y, bz), Color(0.95, 0.7, 0.1), Vector3(0, 0, PI * 0.5))
+		var order := [0, 1, 2]
+		order.shuffle()
+		var n_bumps := 1 if randf() < 0.6 - lvl * 0.3 else 2
+		for k in n_bumps:
+			var bx: float = lanes[order[k]]
+			add_bump(ch, Vector3(bx, 0, bz), 2.3)
+
+func add_bump(ch: Node3D, pos: Vector3, width: float) -> void:
+	# a fat cylinder mostly sunk into the road: wheels roll up it and the
+	# cart gets a kick (spills some groceries) instead of hitting a wall
+	var r := 0.45
+	var y := -r + 0.10
+	var cyl_shape := CylinderShape3D.new()
+	cyl_shape.radius = r
+	cyl_shape.height = width
+	var bcs := CollisionShape3D.new()
+	bcs.shape = cyl_shape
+	bcs.position = Vector3(pos.x, y, pos.z)
+	bcs.rotation = Vector3(0, 0, PI * 0.5)
+	ch.add_child(bcs)
+	var cyl_mesh := CylinderMesh.new()
+	cyl_mesh.top_radius = r
+	cyl_mesh.bottom_radius = r
+	cyl_mesh.height = width
+	cyl_mesh.radial_segments = 16
+	var mi := add_mesh(ch, cyl_mesh, Vector3(pos.x, y, pos.z), Color(0.95, 0.7, 0.1), Vector3(0, 0, PI * 0.5))
+	# black/yellow stripes so it reads as a hazard
+	for k in 3:
+		var sx := pos.x - width * 0.5 + width * (k + 0.5) / 3.0
+		add_box_mesh(ch, Vector3(0.22, 0.04, 0.5), Vector3(sx, 0.09, pos.z), Color(0.12, 0.12, 0.12))
+	bumps.append(mi)
 
 func add_pickup(parent: Node3D, pos: Vector3) -> void:
 	var kind := randi() % 3
@@ -384,7 +403,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 		if ev.pressed:
 			if state == State.READY:
 				start_run()
-			elif state == State.CRASHED and crash_t > 1.2:
+			elif state == State.CRASHED and crash_elapsed() > 1.4:
 				get_tree().reload_current_scene()
 	elif ev is InputEventScreenDrag:
 		touch_x = ev.position.x
@@ -421,7 +440,13 @@ func bot_steer() -> float:
 		var d := c.global_position.dot(fwd) - cs
 		if d > 0.0 and d < 14.0 and abs(c.global_position.x - target_x) < 1.3:
 			target_x = c.global_position.x + (2.0 if target_x >= c.global_position.x else -2.0)
-	target_x = clampf(target_x, -3.2, 3.2)
+	for b in bumps:
+		if "--hitbumps" in OS.get_cmdline_user_args() or not is_instance_valid(b):
+			continue
+		var d := b.global_position.dot(fwd) - cs
+		if d > 0.0 and d < 12.0 and abs(b.global_position.x - target_x) < 1.9:
+			target_x = b.global_position.x + (2.4 if target_x >= b.global_position.x else -2.4)
+	target_x = clampf(target_x, -3.4, 3.4)
 	return clampf((target_x - cx) * 0.6, -1.0, 1.0)
 
 # ---------- loop ----------
@@ -444,7 +469,10 @@ func _physics_process(delta: float) -> void:
 	if state != State.RUNNING:
 		return
 	run_time += delta
+	var prev_load := cart_load
 	cart_load = items_in_cart()
+	if cart_load < prev_load:
+		spilled += prev_load - cart_load
 
 	var v := cart.linear_velocity
 	var fwd_speed := v.dot(fwd)
@@ -454,8 +482,24 @@ func _physics_process(delta: float) -> void:
 		cart.apply_central_force(fwd * cart.mass * (target - fwd_speed) * 1.2)
 	var grip := 5.0 / (1.0 + cart_load * 0.035)
 	var max_lat := 7.0 - cart_load * 0.03
-	var desired_x := get_steer() * max_lat
+	var steer := get_steer()
+	var desired_x := steer * max_lat
 	cart.apply_central_force(Vector3(1, 0, 0) * cart.mass * (desired_x - v.x) * grip)
+	# keep the cart pointing downhill: only a slight lean into the steer
+	var f := -cart.global_transform.basis.z
+	var yaw := -asin(clampf(f.x, -1.0, 1.0))
+	var desired_yaw := -steer * 0.12
+	# soft road edge: push back instead of scraping into the curb
+	var lim := ROAD_W * 0.5 - 0.9
+	var px := cart.global_position.x
+	if absf(px) > lim:
+		var outward := signf(px)
+		if cart.linear_velocity.x * outward > 0.0:
+			cart.linear_velocity = Vector3(cart.linear_velocity.x * 0.3, cart.linear_velocity.y, cart.linear_velocity.z)
+		cart.apply_central_force(Vector3(-outward, 0, 0) * cart.mass * (absf(px) - lim) * 80.0)
+		desired_yaw = 0.0
+	var av := cart.angular_velocity
+	cart.angular_velocity = av + up_n * ((desired_yaw - yaw) * 8.0 - av.dot(up_n))
 
 	# collect pickups the cart drives through
 	var cpos := cart.global_position + up_n * 0.6
@@ -475,6 +519,16 @@ func _physics_process(delta: float) -> void:
 	var slammed := prev_fwd_speed - fwd_speed > 5.0
 	if tipped or height < -1.5 or slammed:
 		crash_reason = "tipped" if tipped else ("slammed" if slammed else "fell")
+		if autotest:
+			var near := 99.0
+			for c in crates:
+				if is_instance_valid(c):
+					near = minf(near, c.global_position.distance_to(cart.global_position))
+			var nb := 99.0
+			for bb in bumps:
+				if is_instance_valid(bb):
+					nb = minf(nb, absf((bb.global_position - cart.global_position).dot(fwd)))
+			print("CRASHDBG nearest_crate=", near, " nearest_bump_along=", nb, " cart_x=", cart.global_position.x, " dv=", prev_fwd_speed - fwd_speed)
 		crash()
 	prev_fwd_speed = fwd_speed
 
@@ -493,10 +547,19 @@ func _physics_process(delta: float) -> void:
 	for i in range(crates.size() - 1, -1, -1):
 		if not is_instance_valid(crates[i]):
 			crates.remove_at(i)
+	for i in range(bumps.size() - 1, -1, -1):
+		if not is_instance_valid(bumps[i]):
+			bumps.remove_at(i)
+
+func crash_elapsed() -> float:
+	return (Time.get_ticks_msec() - crash_ms) / 1000.0
 
 func crash() -> void:
 	state = State.CRASHED
 	crash_t = 0.0
+	crash_ms = Time.get_ticks_msec()
+	shake = 0.5
+	Engine.time_scale = 0.2
 	final_score = items_in_cart()
 	var new_best := final_score > best
 	if new_best:
@@ -521,7 +584,7 @@ func crash() -> void:
 	add_mesh(boy_body, body, Vector3(0, 1.05, 0), Color(0.2, 0.45, 0.85))
 	add_child(boy_body)
 	boy_body.global_transform = xf
-	boy_body.linear_velocity = vel + up_n * 4.0 + fwd * 2.0
+	boy_body.linear_velocity = vel * 1.1 + up_n * 6.0
 	boy_body.angular_velocity = Vector3(randf_range(6, 10), randf_range(-3, 3), randf_range(-4, 4))
 
 	var head_body := RigidBody3D.new()
@@ -546,19 +609,28 @@ func crash() -> void:
 
 	# groceries keep their momentum and fly out
 	for it in items:
-		it.apply_central_impulse((up_n * randf_range(0.5, 1.2) + Vector3(randf_range(-0.5, 0.5), 0, 0)) * 0.5)
+		it.apply_central_impulse((up_n * randf_range(0.8, 1.8) + fwd * randf_range(0.0, 0.8) + Vector3(randf_range(-0.8, 0.8), 0, 0)) * 0.7)
+	cart.apply_torque_impulse(Vector3(randf_range(-1, 1), 0, randf_range(-1, 1)).normalized() * 6.0)
+	cart.apply_central_impulse(up_n * 25.0)
 
 	msg.text = "CRASH!\n\nScore: %d\n%s\nBest: %d\n\ntap to restart" % [
 		final_score, ("NEW BEST!" if new_best else ""), best]
 
 func _process(delta: float) -> void:
 	frame += 1
+	var real_dt := delta / maxf(Engine.time_scale, 0.01)
+	if state == State.CRASHED:
+		var el := crash_elapsed()
+		Engine.time_scale = lerpf(0.2, 1.0, clampf((el - 0.25) / 0.9, 0.0, 1.0))
+		shake = maxf(shake - real_dt * 0.8, 0.0)
 	var focus := cart.global_position
 	if state == State.CRASHED and is_instance_valid(boy_body):
 		focus = focus.lerp(boy_body.global_position, 0.5)
 	var target_pos := focus - fwd * 6.5 + Vector3(0, 3.2, 0)
-	cam.global_position = cam.global_position.lerp(target_pos, clamp(delta * 6.0, 0.0, 1.0))
+	cam.global_position = cam.global_position.lerp(target_pos, clamp(real_dt * 6.0, 0.0, 1.0))
 	cam.look_at(focus + fwd * 6.0 + Vector3(0, 0.6, 0), Vector3.UP)
+	if shake > 0.0:
+		cam.global_position += Vector3(randf_range(-1, 1), randf_range(-1, 1), 0) * shake * 0.5
 
 	for p in pickups:
 		if is_instance_valid(p):
@@ -575,15 +647,15 @@ func _process(delta: float) -> void:
 
 	if autotest:
 		if frame % 100 == 0:
-			print("f=", frame, " state=", state, " load=", cart_load, " collected=", collected, " dist=", dist,
+			print("f=", frame, " state=", state, " load=", cart_load,  " collected=", collected, " spilled=", spilled, " dist=", dist,
 				" speed=", int(cart.linear_velocity.dot(fwd) * 3.6), " reason=", crash_reason)
 		if frame in [150, 400, 700]:
 			var p := "user://shot_%d.png" % frame
 			get_viewport().get_texture().get_image().save_png(p)
-		if state == State.CRASHED and crash_t > 0.6 and not has_meta("crash_shot"):
+		if state == State.CRASHED and crash_elapsed() > 0.5 and not has_meta("crash_shot"):
 			set_meta("crash_shot", true)
 			get_viewport().get_texture().get_image().save_png("user://shot_crash.png")
 			print("CRASH at dist=", dist, " score=", final_score, " collected=", collected, " reason=", crash_reason)
-		if frame >= 900 or (state == State.CRASHED and crash_t > 1.0):
+		if frame >= 1100 or (state == State.CRASHED and crash_elapsed() > 2.5):
 			print("DONE")
 			get_tree().quit()
