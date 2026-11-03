@@ -2,7 +2,7 @@
 
 Downhill shopping-cart runner, built in Godot 4.5 (GL Compatibility renderer).
 
-**Current build: game loop prototype.** Grab groceries on the road; the fuller the cart, the faster it goes and the lazier it steers. Speed bumps and hard swerves spill items. Hit a crate and the boy goes flying. Score = what's still in the cart when you crash.
+**Current build: look test (Indian street, curved world, real models).** Grab groceries on the road; the fuller the cart, the faster it goes and the lazier it steers. Speed bumps and hard swerves spill items. Hit a crate and the boy goes flying. Score = what's still in the cart when you crash.
 
 ## Controls
 - Touch and hold left/right half of the screen to steer (keyboard: A/D or arrows)

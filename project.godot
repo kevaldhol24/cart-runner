@@ -26,3 +26,14 @@ renderer/rendering_method.mobile="gl_compatibility"
 textures/vram_compression/import_etc2_astc=true
 lights_and_shadows/directional_shadow/size=2048
 lights_and_shadows/directional_shadow/size.mobile=1024
+
+[shader_globals]
+
+curve_origin={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
+curve_amount={
+"type": "float",
+"value": 0.0032
+}
